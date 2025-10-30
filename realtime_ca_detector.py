@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.join(project_root, 'audit'))
 # 导入模块
 from monitor.twitter_listener import TwitterListener
 from extractor.realtime_bert_analyzer import RealtimeBERTAnalyzer
+from extractor.redis_token_matcher import RedisTokenMatcher
 from audit.realtime_auditor import RealtimeAuditor
 
 
@@ -58,6 +59,7 @@ class RealtimeCADetector:
         # 创建组件
         print("\n[Detector] Initializing components...")
         self.analyzer = RealtimeBERTAnalyzer(use_gpu=False, use_bert=use_bert)
+        self.redis_matcher = RedisTokenMatcher()  # 初始化 Redis token matcher
         self.auditor = RealtimeAuditor(use_ai=use_ai, rate_limit=1.5)
         self.listener = TwitterListener(ws_url, 
                                        on_tweet_callback=self.on_tweet_received,
@@ -182,30 +184,97 @@ class RealtimeCADetector:
             print(json.dumps(tweet_data, indent=2, ensure_ascii=False))
             print("-"*70)
             
+            # 提取推文文本用于 Redis 匹配
+            tweet_text = tweet_data.get('text') or tweet_data.get('full_text') or \
+                        tweet_data.get('status', {}).get('text') or \
+                        tweet_data.get('status', {}).get('full_text') or ''
+            
+            # 第一步：使用 Redis matcher 快速检查是否包含已知 token
+            print("\n[Detector] Step 1: Checking against Redis known tokens...")
+            redis_matches = self.redis_matcher.match_tokens_in_text(tweet_text)
+            
+            if redis_matches:
+                print(f"[Detector] ✓ Found {len(redis_matches)} known token(s) from Redis:")
+                for match in redis_matches:
+                    print(f"  - ${match['symbol']} ({match['match_type']}, "
+                          f"confidence: {match['confidence']:.2f}, "
+                          f"from Redis)")
+                    
+                    # 标记为高优先级
+                    match['priority'] = 'high'
+                    match['known_token'] = True
+            else:
+                print("[Detector] No known tokens found in Redis")
+            
+            # 第二步：使用 BERT/Pattern 分析提取新 token
+            print("\n[Detector] Step 2: Analyzing with BERT/Pattern extraction...")
             analysis_result = self.analyzer.analyze_tweet(tweet_data)
             
             # 提取代币
-            tokens = analysis_result.get('tokens', [])
+            bert_tokens = analysis_result.get('tokens', [])
             
-            if not tokens:
+            # 第三步：合并 Redis 匹配和 BERT 分析结果
+            print("\n[Detector] Step 3: Merging Redis matches with BERT results...")
+            all_tokens = []
+            seen_symbols = set()
+            
+            # 优先添加 Redis 匹配的 token（已知 token，优先级高）
+            for redis_token in redis_matches:
+                symbol = redis_token['symbol']
+                if symbol not in seen_symbols:
+                    all_tokens.append(redis_token)
+                    seen_symbols.add(symbol)
+            
+            # 添加 BERT 分析的 token（可能包含新 token）
+            for bert_token in bert_tokens:
+                symbol = bert_token['symbol']
+                if symbol not in seen_symbols:
+                    # 标记为新发现的 token
+                    bert_token['known_token'] = False
+                    bert_token['priority'] = 'normal'
+                    all_tokens.append(bert_token)
+                    seen_symbols.add(symbol)
+                else:
+                    # 如果已在 Redis 中，提升置信度
+                    for token in all_tokens:
+                        if token['symbol'] == symbol:
+                            # 使用 BERT 和 Redis 的最高置信度
+                            token['confidence'] = max(
+                                token.get('confidence', 0),
+                                bert_token.get('confidence', 0)
+                            )
+                            print(f"[Detector] Updated confidence for ${symbol}: {token['confidence']:.2f}")
+            
+            if not all_tokens:
                 print("[Detector] No tokens found in this tweet")
                 return
             
-            print(f"[Detector] Found {len(tokens)} potential tokens:")
-            for token_info in tokens:
-                print(f"  - ${token_info['symbol']} "
-                      f"(confidence: {token_info['confidence']:.2f}, "
-                      f"context: {token_info['context_score']:.2f}, "
-                      f"source: {token_info['source']})")
+            print(f"\n[Detector] Total {len(all_tokens)} unique token(s) after merging:")
+            for token_info in all_tokens:
+                is_known = "✓ KNOWN" if token_info.get('known_token', False) else "NEW"
+                priority = token_info.get('priority', 'normal').upper()
+                print(f"  - ${token_info['symbol']} [{is_known}] [{priority}] "
+                      f"(confidence: {token_info.get('confidence', 0):.2f}, "
+                      f"source: {token_info.get('source', 'unknown')})")
             
-            # 过滤并加入审计队列
-            for token_info in tokens:
-                # 检查阈值 (满足其中一个条件即可通过)
-                if (token_info['confidence'] < self.min_confidence and 
-                    token_info['context_score'] < self.min_context_score):
-                    print(f"[Detector] Skipping ${token_info['symbol']} (below threshold: "
-                          f"confidence={token_info['confidence']:.2f}, context={token_info['context_score']:.2f})")
-                    continue
+            # 第四步：过滤并加入审计队列
+            print("\n[Detector] Step 4: Filtering and queueing for audit...")
+            for token_info in all_tokens:
+                # 已知 token（从 Redis 匹配）可以放宽阈值
+                is_known = token_info.get('known_token', False)
+                
+                if is_known:
+                    # 已知 token，直接通过（降低阈值或跳过检查）
+                    print(f"[Detector] ✓ ${token_info['symbol']} is a known token, fast-tracking to audit")
+                else:
+                    # 新 token，需要检查阈值
+                    confidence = token_info.get('confidence', 0)
+                    context_score = token_info.get('context_score', 0)
+                    
+                    if (confidence < self.min_confidence and context_score < self.min_context_score):
+                        print(f"[Detector] Skipping ${token_info['symbol']} (below threshold: "
+                              f"confidence={confidence:.2f}, context={context_score:.2f})")
+                        continue
                 
                 # 不再检查是否已处理，每次都处理
                 # if token_info['symbol'] in self.processed_tokens:

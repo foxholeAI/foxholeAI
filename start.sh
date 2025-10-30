@@ -60,6 +60,16 @@ is_running() {
 
 # Start ws_server
 start_ws_server() {
+    # 先 kill 占用 8765 端口的进程
+    print_info "Checking port 8765..."
+    local port_pid=$(lsof -ti:8765 2>/dev/null)
+    if [ ! -z "$port_pid" ]; then
+        print_warning "Port 8765 is occupied by PID: $port_pid, killing it..."
+        kill -9 $port_pid 2>/dev/null || true
+        sleep 1
+        print_success "Port 8765 is now free"
+    fi
+    
     if is_running "$WS_SERVER_PID"; then
         print_warning "ws_server is already running (PID: $(cat $WS_SERVER_PID))"
         return 1
