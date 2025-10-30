@@ -12,10 +12,11 @@ API_ENDPOINTS = {
 }
 
 # 采集配置
-FETCH_INTERVAL = 0.1  # 每次请求间隔（秒）
+FETCH_INTERVAL = 0.2  # 每次请求间隔（秒），限制为每秒5次请求
 REQUEST_TIMEOUT = 10  # 请求超时时间（秒）
 USE_ENDPOINTS = ["token_profiles", "token_boosts_latest", "token_boosts_top"]  # 要使用的端点列表
 ENDPOINT_ROTATION_INTERVAL = 10  # 端点轮换间隔（秒），避免同时请求所有端点
+API_RATE_LIMIT = 0.2  # API 请求速率限制（秒/请求），防止429错误
 
 # CSV 配置
 CSV_FILE = "tokens_data.csv"

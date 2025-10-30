@@ -8,9 +8,12 @@ import aiohttp
 import csv
 import os
 import logging
+import json
+import redis
 from datetime import datetime
 from typing import Set, Tuple, List, Dict
 from collections import deque
+from collections.abc import Set as AbstractSet
 import signal
 import sys
 
@@ -25,7 +28,13 @@ from config import (
     LOG_LEVEL,
     CACHE_SIZE,
     USE_ENDPOINTS,
-    ENDPOINT_ROTATION_INTERVAL
+    ENDPOINT_ROTATION_INTERVAL,
+    API_RATE_LIMIT,
+    REDIS_HOST,
+    REDIS_PORT,
+    REDIS_DB,
+    REDIS_KEY_PREFIX,
+    REDIS_SET_KEY
 )
 
 
@@ -46,9 +55,30 @@ class TokenMonitor:
         }
         self.current_endpoint_index = 0  # 用于轮换端点
         self.last_endpoint_switch = 0  # 上次切换端点的时间
+        self.last_api_call_time = 0  # 上次API调用时间，用于速率限制
+        
+        # 初始化 Redis 连接
+        self.redis_client = redis.Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            db=REDIS_DB,
+            decode_responses=True  # 自动解码为字符串
+        )
+        
         self._setup_logging()
         self._setup_signal_handlers()
+        self._test_redis_connection()
         
+    def _test_redis_connection(self):
+        """测试 Redis 连接"""
+        try:
+            self.redis_client.ping()
+            print(f"✓ Redis 连接成功: {REDIS_HOST}:{REDIS_PORT}")
+        except Exception as e:
+            print(f"✗ Redis 连接失败: {e}")
+            print("请确保 Redis 服务已启动")
+            sys.exit(1)
+    
     def _setup_logging(self):
         """配置日志"""
         logging.basicConfig(
@@ -83,8 +113,32 @@ class TokenMonitor:
             self._load_existing_tokens()
             
     def _load_existing_tokens(self):
-        """加载已存在的token到内存集合中，用于快速去重"""
+        """从 Redis 加载已存在的token到内存集合中，用于快速去重"""
         try:
+            # 从 Redis 集合中获取所有 token keys
+            token_keys = self.redis_client.smembers(REDIS_SET_KEY)
+            
+            for token_key_str in token_keys:
+                # token_key_str 格式: "symbol:name"
+                parts = token_key_str.split(':', 1)
+                if len(parts) == 2:
+                    token_key = (parts[0], parts[1])
+                    self.seen_tokens.add(token_key)
+                    self.token_cache.append(token_key)
+            
+            self.logger.info(f"从 Redis 加载了 {len(self.seen_tokens)} 个已存在的token")
+        except Exception as e:
+            self.logger.error(f"从 Redis 加载数据失败: {e}")
+            # 尝试从 CSV 备份加载
+            self._load_from_csv_backup()
+    
+    def _load_from_csv_backup(self):
+        """从 CSV 备份文件加载数据"""
+        try:
+            if not os.path.exists(self.csv_file):
+                self.logger.warning("CSV 备份文件不存在")
+                return
+                
             with open(self.csv_file, 'r', newline='', encoding='utf-8') as f:
                 reader = csv.reader(f)
                 next(reader)  # 跳过表头
@@ -93,12 +147,25 @@ class TokenMonitor:
                         token_key = (row[0], row[1])  # (symbol, name)
                         self.seen_tokens.add(token_key)
                         self.token_cache.append(token_key)
-            self.logger.info(f"加载了 {len(self.seen_tokens)} 个已存在的token")
+            self.logger.info(f"从 CSV 备份加载了 {len(self.seen_tokens)} 个token")
         except Exception as e:
-            self.logger.error(f"加载已有数据失败: {e}")
+            self.logger.error(f"从 CSV 备份加载失败: {e}")
+    
+    async def _rate_limit_wait(self):
+        """API速率限制：确保每次请求间隔至少为API_RATE_LIMIT秒"""
+        import time
+        current_time = time.time()
+        time_since_last_call = current_time - self.last_api_call_time
+        
+        if time_since_last_call < API_RATE_LIMIT:
+            wait_time = API_RATE_LIMIT - time_since_last_call
+            await asyncio.sleep(wait_time)
+        
+        self.last_api_call_time = time.time()
             
     async def _fetch_token_profiles(self) -> List[Tuple[str, str]]:
         """异步获取最新的token profiles"""
+        await self._rate_limit_wait()  # 速率限制
         url = f"{API_BASE_URL}{API_ENDPOINTS['token_profiles']}"
         
         try:
@@ -135,6 +202,7 @@ class TokenMonitor:
     
     async def _fetch_token_details(self, token_address: str) -> List[Tuple[str, str]]:
         """获取特定 token 的详细信息"""
+        await self._rate_limit_wait()  # 速率限制
         url = f"{API_BASE_URL}{API_ENDPOINTS['token_details'].format(address=token_address)}"
         
         try:
@@ -150,6 +218,7 @@ class TokenMonitor:
     
     async def _fetch_boosted_tokens(self, endpoint_key: str) -> List[Tuple[str, str]]:
         """异步获取提升的token数据"""
+        await self._rate_limit_wait()  # 速率限制
         url = f"{API_BASE_URL}{API_ENDPOINTS[endpoint_key]}"
         
         try:
@@ -226,7 +295,7 @@ class TokenMonitor:
         return tokens
         
     def _save_tokens(self, tokens: List[Tuple[str, str]]):
-        """将新token保存到CSV文件"""
+        """将新token保存到 Redis 和 CSV（备份）"""
         if not tokens:
             return
             
@@ -244,11 +313,29 @@ class TokenMonitor:
                 
         if new_tokens:
             try:
+                # 保存到 Redis
+                for symbol, name, ts in new_tokens:
+                    token_key_str = f"{symbol}:{name}"
+                    token_data = {
+                        "symbol": symbol,
+                        "name": name,
+                        "timestamp": ts
+                    }
+                    
+                    # 存储到 Redis Hash
+                    redis_key = f"{REDIS_KEY_PREFIX}{token_key_str}"
+                    self.redis_client.hset(redis_key, mapping=token_data)
+                    
+                    # 添加到集合（用于快速查询所有token）
+                    self.redis_client.sadd(REDIS_SET_KEY, token_key_str)
+                
+                # 同时保存到 CSV 作为备份
                 with open(self.csv_file, 'a', newline='', encoding='utf-8') as f:
                     writer = csv.writer(f)
                     writer.writerows(new_tokens)
+                
                 self.stats["total_saved"] += len(new_tokens)
-                self.logger.info(f"保存了 {len(new_tokens)} 个新token")
+                self.logger.info(f"保存了 {len(new_tokens)} 个新token到 Redis 和 CSV")
             except Exception as e:
                 self.logger.error(f"保存数据失败: {e}")
                 

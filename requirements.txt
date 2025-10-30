@@ -1,0 +1,23 @@
+# NLP Meme - Combined Requirements
+# Core dependencies for all components
+
+# Web and API
+requests>=2.32.0
+aiohttp>=3.9.0
+
+# WebSocket
+websocket-client>=1.9.0
+websockets>=13.0
+
+# NLP dependencies (optional - comment out if not using BERT/spaCy)
+# Uncomment for BERT-based analysis:
+# transformers>=4.35.0
+# torch>=2.0.0
+
+# Uncomment for spaCy NER:
+# spacy>=3.7.0
+# Run after install: python -m spacy download en_core_web_sm
+
+# System utilities
+python-dotenv>=1.0.0
+
