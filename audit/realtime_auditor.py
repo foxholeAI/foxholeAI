@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 实时审计模块
-对提取的代币符号进行实时审计，查询BSC链上的合约地址信息
+对提取的代币符号进行实时审计，查询所有链上的合约地址信息（支持多链）
 """
 
 import requests
@@ -311,23 +311,25 @@ class RealtimeAuditor:
             })
             return {"error": error_msg}
     
-    def filter_bsc_pairs(self, search_result: Dict) -> List[Dict]:
+    def filter_all_pairs(self, search_result: Dict) -> List[Dict]:
         """
-        过滤出BSC链上的交易对
+        获取所有链上的交易对（不再限制只查询 BSC）
         
         Args:
             search_result: DexScreener搜索结果
             
         Returns:
-            BSC交易对列表
+            所有链的交易对列表
         """
-        bsc_pairs = []
+        all_pairs = []
         
         if "pairs" not in search_result:
-            return bsc_pairs
+            return all_pairs
+        
+        # 获取所有交易对
+        all_pairs = search_result.get("pairs", [])
         
         # DEBUG: 显示所有链的统计
-        all_pairs = search_result.get("pairs", [])
         chain_stats = {}
         if all_pairs:
             for pair in all_pairs:
@@ -337,49 +339,45 @@ class RealtimeAuditor:
             print(f"[DEBUG] Total pairs found: {len(all_pairs)}")
             print(f"[DEBUG] Pairs by chain: {chain_stats}")
         
-        for pair in search_result.get("pairs", []):
-            chain_id = pair.get("chainId", "").lower()
-            if chain_id in ["bsc", "bnb", "binance"]:
-                bsc_pairs.append(pair)
+        print(f"[DEBUG] All pairs (no chain filter): {len(all_pairs)} pairs")
         
-        print(f"[DEBUG] BSC pairs filtered: {len(bsc_pairs)} pairs")
-        
-        # 记录过滤日志
-        bsc_pairs_info = []
-        if bsc_pairs:
-            print(f"\n[DEBUG] BSC Pairs Details:")
-            for i, pair in enumerate(bsc_pairs, 1):
+        # 记录所有交易对的详情
+        all_pairs_info = []
+        if all_pairs:
+            print(f"\n[DEBUG] All Pairs Details:")
+            for i, pair in enumerate(all_pairs, 1):
                 base_token = pair.get("baseToken", {})
+                chain_id = pair.get("chainId", "unknown")
                 pair_info = {
                     "pair_number": i,
+                    "chain": chain_id,
                     "symbol": base_token.get('symbol', 'Unknown'),
                     "dex": pair.get('dexId', 'Unknown'),
                     "token_address": base_token.get('address', 'N/A'),
                     "pair_address": pair.get('pairAddress', 'N/A'),
                     "liquidity_usd": pair.get('liquidity', {}).get('usd', 0)
                 }
-                bsc_pairs_info.append(pair_info)
+                all_pairs_info.append(pair_info)
                 
-                print(f"  Pair #{i}: {base_token.get('symbol', 'Unknown')} on {pair.get('dexId', 'Unknown')}")
+                print(f"  Pair #{i}: {base_token.get('symbol', 'Unknown')} on {chain_id.upper()} - {pair.get('dexId', 'Unknown')}")
                 print(f"    - Token Address: {base_token.get('address', 'N/A')}")
                 print(f"    - Pair Address: {pair.get('pairAddress', 'N/A')}")
                 print(f"    - Liquidity: ${pair.get('liquidity', {}).get('usd', 0):,.2f}")
         
-        self._log_json("filter_bsc_pairs", {
+        self._log_json("filter_all_pairs", {
             "total_pairs": len(all_pairs),
             "chain_stats": chain_stats,
-            "bsc_pairs_count": len(bsc_pairs),
-            "bsc_pairs": bsc_pairs_info
+            "all_pairs": all_pairs_info
         })
         
-        return bsc_pairs
+        return all_pairs
     
-    def extract_contract_info(self, bsc_pairs: List[Dict]) -> List[Dict]:
+    def extract_contract_info(self, all_pairs: List[Dict]) -> List[Dict]:
         """
-        提取合约地址信息
+        提取合约地址信息（支持所有链）
         
         Args:
-            bsc_pairs: BSC交易对列表
+            all_pairs: 所有链的交易对列表
             
         Returns:
             合约信息列表
@@ -388,9 +386,9 @@ class RealtimeAuditor:
         seen_addresses = set()
         duplicate_count = 0
         
-        print(f"\n[DEBUG] Extracting contract info from {len(bsc_pairs)} pairs...")
+        print(f"\n[DEBUG] Extracting contract info from {len(all_pairs)} pairs...")
         
-        for pair in bsc_pairs:
+        for pair in all_pairs:
             base_token = pair.get("baseToken", {})
             token_address = base_token.get("address", "")
             
@@ -402,7 +400,7 @@ class RealtimeAuditor:
                     "pair_address": pair.get("pairAddress", "N/A"),
                     "name": base_token.get("name", "Unknown"),
                     "symbol": base_token.get("symbol", "Unknown"),
-                    "chain": "BSC",
+                    "chain": pair.get("chainId", "Unknown").upper(),  # 从 pair 中获取实际链ID
                     "dex_id": pair.get("dexId", "Unknown"),
                     "dex_url": pair.get("url", ""),
                     "price_usd": pair.get("priceUsd", "N/A"),
@@ -463,7 +461,7 @@ class RealtimeAuditor:
         
         # 记录提取的合约信息
         self._log_json("extract_contracts", {
-            "total_pairs": len(bsc_pairs),
+            "total_pairs": len(all_pairs),
             "unique_contracts": len(contracts),
             "duplicate_count": duplicate_count,
             "contracts": contracts
@@ -485,7 +483,7 @@ class RealtimeAuditor:
         if not contracts:
             return {
                 "status": "not_found",
-                "message": "No contracts found on BSC chain",
+                "message": "No contracts found on any chain",
                 "recommended_contract": None
             }
         
@@ -696,7 +694,7 @@ Other contracts ({len(contracts)-1}):
             contract_details.append(detail.strip())
         
         # 构建专业的AI分析prompt
-        prompt = f"""你是一位经验丰富的区块链安全专家和DeFi分析师。现在需要你分析BSC链上的代币合约，识别真实合约并评估风险。
+        prompt = f"""你是一位经验丰富的区块链安全专家和DeFi分析师。现在需要你分析多链上的代币合约，识别真实合约并评估风险。
 
 代币符号: ${token_symbol}
 链上发现: {len(contracts)} 个合约地址
@@ -825,30 +823,30 @@ Other contracts ({len(contracts)-1}):
             
             return error_result
         
-        # 过滤BSC链
-        bsc_pairs = self.filter_bsc_pairs(search_result)
+        # 获取所有链的交易对
+        all_pairs = self.filter_all_pairs(search_result)
         
-        if not bsc_pairs:
-            print(f"[Auditor] Not found on BSC chain: ${token_symbol}")
+        if not all_pairs:
+            print(f"[Auditor] Not found on any chain: ${token_symbol}")
             not_found_result = {
                 "token": token_symbol,
                 "status": "not_found",
-                "message": "Not found on BSC chain",
+                "message": "Not found on any chain",
                 "contracts": []
             }
             
             self._log_json("audit_complete", {
                 "token": token_symbol,
                 "status": "not_found",
-                "message": "Not found on BSC chain"
+                "message": "Not found on any chain"
             })
             
             return not_found_result
         
-        print(f"[Auditor] Found {len(bsc_pairs)} BSC pairs")
+        print(f"[Auditor] Found {len(all_pairs)} pairs across multiple chains")
         
         # 提取合约信息
-        contracts = self.extract_contract_info(bsc_pairs)
+        contracts = self.extract_contract_info(all_pairs)
         print(f"[Auditor] Identified {len(contracts)} unique contracts")
         
         # 分析合约
@@ -921,7 +919,7 @@ Other contracts ({len(contracts)-1}):
         if audit_result['status'] in ['not_found', 'error']:
             lines.append(f"Result: {audit_result['message']}")
         else:
-            lines.append(f"\nFound {len(audit_result['contracts'])} contracts on BSC chain")
+            lines.append(f"\nFound {len(audit_result['contracts'])} unique contracts across multiple chains")
             
             if audit_result.get('recommended_contract'):
                 rec = audit_result['recommended_contract']
