@@ -1,0 +1,18 @@
+[Unit]
+Description=Telegram WebSocket Forwarder
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/nlpmeme/telegram
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/python3 /root/nlpmeme/telegram/webhook_forwarder.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/nlpmeme/telegram/logs/telegram_forwarder.log
+StandardError=append:/root/nlpmeme/telegram/logs/telegram_forwarder_error.log
+
+[Install]
+WantedBy=multi-user.target
+
