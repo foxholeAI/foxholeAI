@@ -39,27 +39,29 @@ Foxhole AI 是一个端到端的开源原型，面向交易者与研究员，实
   - 前端（Frontend）：https://github.com/yidongw/foxhole-bot-frontend
   - 监控（Monitor）：`monitor/token_monitor.py`、`monitor/config.py`、`monitor/start.sh`、`monitor/redis_api.py`
   - 社媒监听：`monitor/twitter_listener.py`
-  - 抽取（Extractor）：`extractor/bert_extractor.py`、`extractor/spacy_ner_extractor.py`、`extractor/tfidf_extractor.py`、`extractor/rule_based_extractor.py`、`extractor/regex_extractor.py`、`extractor/realtime_bert_analyzer.py`
+  - 抽取（Extractor）：`extractor/bert_extractor.py`、`extractor/spacy_ner_extractor.py`、`extractor/tfidf_extractor.py`、`extractor/rule_based_extractor.py`、`extractor/regex_extractor.py`、`extractor/realtime_bert_analyzer.py`、`extractor/redis_token_matcher.py`
   - 审计（Audit）：`audit/realtime_auditor.py`、`audit/audit_tokens.py`
   - 实时分发：`ws_server.py`、`realtime_ca_detector.py`
   - Telegram 推送：`telegram/webhook_forwarder.py`、`telegram/telegram_bot.py`、`telegram/start.sh`
   - 日志管理：`scripts/log_rotation.py`、`scripts/setup_log_rotation.sh`、`scripts/cleanup_old_logs.sh`
+  - Redis 层：`monitor/redis_api.py`、`monitor/migrate_csv_to_redis.py`、`monitor/query_redis_tokens.py`、`monitor/add_token_manual.py`
   - 主启动脚本：`start.sh`
 - **依赖与技术栈**：
   - 语言与运行时：Python 3.10+（建议使用虚拟环境）
   - 核心依赖：见 `requirements.txt`（包含 `requests`、`aiohttp`、`websockets`、`python-dotenv` 等）
-  - 监控依赖：见 `monitor/requirements.txt`（`aiohttp`、`asyncio`）
+  - 监控依赖：见 `monitor/requirements.txt`（`aiohttp`、`asyncio`、`redis`、`flask`）
   - 抽取依赖：见 `extractor/requirements_extractor.txt`（`transformers`、`torch`、`spacy` 等）
   - Telegram 依赖：见 `telegram/requirements.txt`（`requests`、`websockets`、`python-dotenv`）
   - 异步与网络：`asyncio`、`aiohttp`、`websockets`
   - NLP：`transformers`/`torch`（BERT）、`spaCy`（NER）
-  - 数据存储：SQLite（本地数据库）、CSV（数据持久化）
+  - 数据存储：SQLite（本地数据库）、CSV（数据持久化）、Redis（高性能缓存层）
 
 ## 4. Run & Reproduce
 
 - **前置要求**：
 
   - Python 3.10+ 与 `pip`
+  - Redis 6.0+（必需，用于高性能缓存层）
   - 稳定的网络连接
   - （可选）Telegram Bot Token（如需 Telegram 推送）
 
@@ -97,11 +99,17 @@ pip install -r telegram/requirements.txt
 - **快速体验（仅运行代币监控）**：
 
 ```bash
+# 确保 Redis 已启动
+redis-cli ping
+
 cd monitor
+
+# 方式1: 使用启动脚本
 bash start.sh
-# 或直接运行
+
+# 方式2: 直接运行
 python token_monitor.py
-# 运行中会在同目录生成/追加 tokens_data.csv，并打印实时统计
+# 运行中会实时写入 Redis 和 CSV，并打印实时统计
 ```
 
 - **一键启动所有服务（推荐）**：
@@ -134,24 +142,6 @@ cd telegram
 bash start.sh
 # 或直接运行
 python webhook_forwarder.py
-```
-
-- **运行抽取与审计（示例流程）**：
-
-```bash
-# 批量抽取关键词（从 JSON 推文数据）
-cd extractor
-python bert_extractor.py
-python tfidf_extractor.py
-python spacy_ner_extractor.py
-
-# 实时审计与监控
-cd ..
-python realtime_ca_detector.py
-
-# 审计代币
-cd audit
-python audit_tokens.py
 ```
 
 - **数据与样例**：
@@ -192,6 +182,11 @@ bash setup_log_rotation.sh
   **用例 2：社交媒体关键词抽取与合约地址检测**
   - 使用多种 Extractor（BERT、TF-IDF、spaCy NER、规则、正则）批量处理影响力账号推文
   - 从推文中提取加密相关关键词和潜在合约地址
+  - **Redis Token Matcher**：从 Redis 缓存加载已监控代币，在推文中实时匹配
+    - 支持 `$SYMBOL` 格式（如 `$BTC`、`$KITKAT`）
+    - 支持纯文本匹配（如 `BITCOIN`）
+    - 支持中文代币名称匹配
+    - 根据上下文计算置信度，减少误报
   - 运行 `realtime_ca_detector.py` 实时监听推文流，自动检测和验证合约地址
   - 结果使用 WebSocket 服务器推送
   
@@ -204,26 +199,31 @@ bash setup_log_rotation.sh
 ## 6. Verifiable Scope
 
 - 本仓库包含用于复现的核心代码与脚本：
-  - ✅ **完全可验证**：
-    - 代币监控：`monitor/token_monitor.py` 从 DexScreener 抓取数据并持久化
-    - 多策略抽取器：6 种不同的关键词和实体抽取方法（BERT、TF-IDF、spaCy NER、规则、正则、RAKE）
-    - 实时合约地址检测：`realtime_ca_detector.py` 自动检测和验证合约地址
-    - WebSocket 服务器：`ws_server.py` 文件监听与实时推送
-    - Telegram 转发：完整的 Telegram Bot 集成和 WebSocket 转发器
-    - 审计模块：代币审计和实时审计器
-    - 数据样例：包含 3 个影响力账号的真实推文数据
-    - 日志管理：自动日志轮转和清理脚本
-  - ⚙️ **需自备配置**：
-    - Telegram Bot Token 和 Chat ID（如使用 Telegram 推送功能）
-    - Twitter API 访问（如需实时监听 Twitter，当前使用示例数据）
-  - 📦 **已包含**：
-    - 所有核心功能的完整实现
-    - 示例数据和配置文件
-    - 服务安装和管理脚本
+  - 代币监控：`monitor/token_monitor.py` 从 DexScreener 抓取数据并持久化到 Redis + CSV
+  - Redis 缓存层：
+    - `monitor/redis_api.py`：RESTful API 服务，提供代币查询、搜索、统计接口
+    - `extractor/redis_token_matcher.py`：从 Redis 加载代币列表，在推文中智能匹配
+    - `monitor/migrate_csv_to_redis.py`：CSV ↔ Redis 数据迁移工具
+    - `monitor/query_redis_tokens.py`：命令行查询 Redis 代币数据
+  - 多策略抽取器：6 种不同的关键词和实体抽取方法（BERT、TF-IDF、spaCy NER、规则、正则、RAKE）
+  - 实时合约地址检测：`realtime_ca_detector.py` 自动检测和验证合约地址
+  - WebSocket 服务器：`ws_server.py` 文件监听与实时推送
+  - Telegram 转发：完整的 Telegram Bot 集成和 WebSocket 转发器
+  - 审计模块：代币审计和实时审计器
+  - 数据样例：包含 3 个影响力账号的真实推文数据
+  - 日志管理：自动日志轮转和清理脚本
+- **需自备配置**：
+  - Redis 6.0+ 服务（必需）
+  - Telegram Bot Token 和 Chat ID（如使用 Telegram 推送功能）
+  - Twitter API 访问（如需实时监听 Twitter，当前使用示例数据）
+- **已包含**：
+  - 所有核心功能的完整实现
+  - 示例数据和配置文件
+  - 服务安装和管理脚本
 
 ## 7. Roadmap & Impact
 
-- **已完成 ✅**：
+- **已完成**：
   - DexScreener 实时代币监控与数据持久化
   - 6 种关键词抽取策略（BERT、TF-IDF、spaCy、规则、正则、RAKE）
   - 实时合约地址检测与验证系统
@@ -234,6 +234,10 @@ bash setup_log_rotation.sh
 
 - **1-3 周**：
   - 优化关键词检测算法，提高准确率和召回率
+  - Redis 性能优化：
+    - 实现 Redis 集群支持（高可用）
+    - 添加缓存预热机制
+    - 优化查询性能（索引优化、Pipeline 批处理）
   - 增加更多影响力账号监控（支持自定义账号列表）
   - 增强合约地址验证机制：
     - 流动性深度检查
@@ -262,10 +266,10 @@ bash setup_log_rotation.sh
     - 智能交易时机推荐
 
 - **对加密生态的价值**：
-  - 🎯 **信息民主化**：降低普通交易者的信息不对称，提供机构级的实时监控与分析能力
-  - 🛡️ **安全性提升**：通过多层验证减少 Rug Pull、诈骗项目和蜜罐合约造成的资金损失
-  - 🔧 **开源基础设施**：为社区提供可复用的社交情报采集、NLP 分析、实时分发与风控组件
-  - ⚡ **速度优势**：毫秒级响应，帮助交易者在价格发现阶段早期入场
+  - **信息透明化**：降低普通交易者的信息不对称，提供机构级的实时监控与分析能力
+  - **安全性提升**：通过多层验证减少 Rug Pull、诈骗项目和蜜罐合约造成的资金损失
+  - **开源基础设施**：为社区提供可复用的社交情报采集、NLP 分析、实时分发与风控组件
+  - **速度优势**：毫秒级响应，帮助交易者在价格发现阶段早期入场
 
 ## 8. Team & Contacts
 
