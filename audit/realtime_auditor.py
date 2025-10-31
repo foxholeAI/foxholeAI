@@ -19,9 +19,18 @@ import os
 class JSONLogger:
     """JSON日志记录器 - 将审计数据保存为JSON格式"""
     
-    def __init__(self, log_file: str = "data/ws.json"):
-        """初始化JSON日志记录器"""
+    def __init__(self, log_file: str = "data/ws.json", max_size_mb: int = 100, auto_rotate: bool = True):
+        """
+        初始化JSON日志记录器
+        
+        Args:
+            log_file: 日志文件路径
+            max_size_mb: 最大文件大小（MB），超过此大小自动轮转
+            auto_rotate: 是否启用自动日志轮转
+        """
         self.log_file = log_file
+        self.max_size_bytes = max_size_mb * 1024 * 1024
+        self.auto_rotate = auto_rotate
         self.ensure_data_dir()
         
     def ensure_data_dir(self):
@@ -29,6 +38,32 @@ class JSONLogger:
         dir_path = os.path.dirname(self.log_file)
         if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path)
+    
+    def check_and_rotate(self):
+        """检查并在必要时轮转日志"""
+        if not self.auto_rotate:
+            return
+            
+        try:
+            if not os.path.exists(self.log_file):
+                return
+                
+            file_size = os.path.getsize(self.log_file)
+            if file_size >= self.max_size_bytes:
+                # 生成备份文件名
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_file = f"{self.log_file}.{timestamp}"
+                
+                # 重命名当前文件
+                os.rename(self.log_file, backup_file)
+                print(f"[JSON Logger] Log rotated: {self.log_file} -> {backup_file}")
+                print(f"[JSON Logger] File size was: {file_size / 1024 / 1024:.2f} MB")
+                
+                # 创建新文件
+                open(self.log_file, 'a').close()
+                
+        except Exception as e:
+            print(f"[JSON Logger] Failed to rotate log: {e}")
     
     def save_log(self, log_data: Dict):
         """
@@ -39,6 +74,9 @@ class JSONLogger:
             log_data: 要保存的日志数据字典
         """
         try:
+            # 检查是否需要轮转
+            self.check_and_rotate()
+            
             # 添加时间戳
             log_data["logged_at"] = datetime.now().isoformat()
             
@@ -168,7 +206,8 @@ class AIAnalyzer:
 class RealtimeAuditor:
     """实时代币审计器"""
     
-    def __init__(self, use_ai: bool = True, rate_limit: float = 1.5, enable_json_log: bool = True):
+    def __init__(self, use_ai: bool = True, rate_limit: float = 1.5, enable_json_log: bool = True, 
+                 log_max_size_mb: int = 100, log_auto_rotate: bool = True):
         """
         初始化审计器
         
@@ -176,6 +215,8 @@ class RealtimeAuditor:
             use_ai: 是否使用AI分析
             rate_limit: API请求间隔时间(秒)
             enable_json_log: 是否启用JSON日志
+            log_max_size_mb: 日志文件最大大小（MB）
+            log_auto_rotate: 是否启用自动日志轮转
         """
         self.dexscreener_api = "https://api.dexscreener.com/latest/dex"
         self.session = requests.Session()
@@ -189,8 +230,10 @@ class RealtimeAuditor:
         self.current_tweet_event_id = None  # 当前处理的推文事件ID
         
         if enable_json_log:
-            self.json_logger = JSONLogger()
-            print("[Auditor] JSON logging enabled -> data/ws.json")
+            self.json_logger = JSONLogger(max_size_mb=log_max_size_mb, auto_rotate=log_auto_rotate)
+            print(f"[Auditor] JSON logging enabled -> data/ws.json")
+            if log_auto_rotate:
+                print(f"[Auditor] Auto log rotation enabled (max size: {log_max_size_mb} MB)")
         
         if use_ai:
             self.ai_analyzer = AIAnalyzer()

@@ -458,7 +458,8 @@ class RealtimeCADetector:
         # 主循环 - 定期打印统计信息
         try:
             last_stats_time = time.time()
-            while self.listener.is_running():
+            # ✅ 修复：同时检查 running 和 reconnecting 状态，避免在重连时退出
+            while self.listener.is_running() or self.listener.reconnecting:
                 time.sleep(1)
                 
                 # 每60秒打印一次统计信息

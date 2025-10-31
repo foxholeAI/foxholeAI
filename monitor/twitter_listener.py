@@ -209,7 +209,9 @@ class TwitterListener:
         print(f"\n[Listener] Connection closed")
         print(f"[Listener] Status code: {close_status_code}")
         print(f"[Listener] Message: {close_msg}")
-        self.running = False
+        
+        # ⚠️ 修复：不要立即设置 running = False，等待重连结果
+        # self.running = False  # 移除这行，避免主循环过早退出
         self.connection_lost = True
         
         if self.subscribed_users:
@@ -218,6 +220,11 @@ class TwitterListener:
         # 尝试自动重连
         if self.auto_reconnect and not self.should_stop and not self.reconnecting:
             self.reconnect()
+        else:
+            # 如果不重连，才设置 running = False
+            if not self.auto_reconnect or self.should_stop:
+                print(f"[Listener] Not attempting reconnection, marking as stopped")
+                self.running = False
     
     def on_open(self, ws):
         """连接建立"""
@@ -357,6 +364,7 @@ class TwitterListener:
             print(f"[Listener] Max reconnection attempts ({self.max_reconnect_attempts}) reached")
             print(f"[Listener] Giving up reconnection")
             self.reconnecting = False
+            self.running = False  # ✅ 放弃重连时才设置为 False
             return
         
         # 计算延迟时间（指数退避）
@@ -399,6 +407,10 @@ class TwitterListener:
             print(f"[Listener] Reconnection failed: {e}")
             self.reconnecting = False
             # 失败后会在on_close中再次触发重连
+            # 但如果已经达到最大重连次数，设置 running = False
+            if self.max_reconnect_attempts > 0 and self.reconnect_count >= self.max_reconnect_attempts:
+                print(f"[Listener] Max reconnection attempts reached, marking as stopped")
+                self.running = False
     
     def stop(self):
         """停止监听器"""
