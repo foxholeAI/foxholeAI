@@ -1,0 +1,26 @@
+[Unit]
+Description=Token Monitor Service - Dex Screener
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/nlpmeme/monitor
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/python3 /root/nlpmeme/monitor/token_monitor.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/nlpmeme/monitor/monitor.log
+StandardError=append:/root/nlpmeme/monitor/monitor_error.log
+
+# 资源限制
+LimitNOFILE=65536
+
+# 进程管理
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+

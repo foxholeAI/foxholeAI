@@ -29,3 +29,10 @@ LOG_LEVEL = "INFO"
 # 性能配置
 CACHE_SIZE = 10000  # 内存缓存的token数量，用于快速去重
 
+# Redis 配置
+REDIS_HOST = "127.0.0.1"
+REDIS_PORT = 6379
+REDIS_DB = 0
+REDIS_KEY_PREFIX = "token:"
+REDIS_SET_KEY = "monitored_tokens"
+
