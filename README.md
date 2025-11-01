@@ -5,7 +5,8 @@ Foxhole AI 是一个端到端的开源原型，面向交易者与研究员，实
 ## 1. Deliverables
 
 - [x] GitHub 仓库：包含完整代码与本 README（当前目录）
-- [x] Demo 视频：https://www.youtube.com/watch?v=nn3zgyBGgdQ
+- [x] Video：[Youtube](https://www.youtube.com/watch?v=nn3zgyBGgdQ)
+- [x] Pitch Deck：[Google Drive](https://docs.google.com/presentation/d/1BfsnzbwMK1iYdB9Vr3OD1x7NMVJrydJ9/edit?usp=sharing&ouid=114972223476033742889&rtpof=true&sd=true)
 
 ## 2. Overview
 
